@@ -14,3 +14,16 @@ Implementation RPC over AMQP using Go and RabbitMQ.
   - [ ] Receive request
     - [ ] Handle different type of request (like http router)
   - [ ] Return response
+
+AMQP                    vs  HTTP
+wire-level protocol         general purpose protocol 
+asynchronous                synchronous
+can guarantee the           drop the message when server is down
+message is delivered
+
+Things to Think!
+1. On the client we should handle duplicate response
+2. On the server we should make sure idempotency
+3. Timeout for each request
+4. Gracefully shutdown the client
+5. Documentation of the method (address, input, and output)

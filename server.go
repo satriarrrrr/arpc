@@ -7,20 +7,49 @@ import (
 	"github.com/streadway/amqp"
 )
 
+// Server an ARPC server
 type Server struct {
-	queueName string
-	channel   *amqp.Channel
-	handler   func(msg []byte) []byte
+	connection *amqp.Connection
+	handlers   map[string]func(msg []byte) []byte
 }
 
 func defaultServer() *Server {
-	return &Server{}
+	return &Server{
+		handlers: make(map[string]func(msg []byte) []byte),
+	}
 }
 
-func NewServer(queueName string, connection *amqp.Connection, handler func(msg []byte) []byte) (*Server, error) {
-	channel, err := connection.Channel()
+// NewServer initiate a new server
+func NewServer(connection *amqp.Connection) (*Server, error) {
+	s := defaultServer()
+	s.connection = connection
+
+	return s, nil
+}
+
+// AddCommand register command
+func (s *Server) AddCommand(key string, f func(msg []byte) []byte) {
+	s.handlers[key] = f
+}
+
+// ListenAndServe start listen and serve
+func (s *Server) ListenAndServe() error {
+	log.Printf(">>> Start the server...\n")
+	if len(s.handlers) == 0 {
+		return errors.New("no handlers defined")
+	}
+
+	for k, v := range s.handlers {
+		go s.listen(k, v)
+	}
+
+	return nil
+}
+
+func (s *Server) listen(key string, f func([]byte) []byte) {
+	channel, err := s.connection.Channel()
 	if err != nil {
-		return nil, errors.Wrap(err, "error create channel")
+		failOnError(err, "error create channel")
 	}
 
 	err = channel.Qos(
@@ -29,22 +58,11 @@ func NewServer(queueName string, connection *amqp.Connection, handler func(msg [
 		false, // global
 	)
 	if err != nil {
-		return nil, errors.Wrap(err, "")
+		failOnError(err, "error set qos")
 	}
 
-	s := defaultServer()
-	s.queueName = queueName
-	s.channel = channel
-	s.handler = handler
-
-	return s, nil
-}
-
-func (s *Server) ListenAndServe() error {
-	log.Printf(">>> Start the server...\n")
-
-	msgs, err := s.channel.Consume(
-		s.queueName,
+	msgs, err := channel.Consume(
+		key,
 		"",    // consumer
 		false, // auto-ack
 		false, // exclusive
@@ -53,13 +71,12 @@ func (s *Server) ListenAndServe() error {
 		nil,   // args
 	)
 	if err != nil {
-		return errors.Wrap(err, "error consume queue")
+		failOnError(err, "error consume queue")
 	}
 
 	for d := range msgs {
 		go func(dd amqp.Delivery) {
-			log.Println(">>> Receiving msg: ", string(dd.Body))
-			err = s.channel.Publish(
+			err = channel.Publish(
 				"",         // exchange
 				dd.ReplyTo, // routing key
 				false,      // mandatory
@@ -67,12 +84,10 @@ func (s *Server) ListenAndServe() error {
 				amqp.Publishing{
 					ContentType:   "text/plain",
 					CorrelationId: dd.CorrelationId,
-					Body:          s.handler(dd.Body),
+					Body:          f(dd.Body),
 				})
-			failOnError(err, "Failed to publish a message")
+			failOnError(err, "failed to publish a message")
 			dd.Ack(false)
 		}(d)
 	}
-
-	return nil
 }
